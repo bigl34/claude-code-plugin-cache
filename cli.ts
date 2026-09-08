@@ -1,26 +1,17 @@
 #!/usr/bin/env node
-/**
- * Plugin Cache CLI - Global cache management
- *
- * Usage:
- *   npx plugin-cache stats           Show all plugin cache statistics
- *   npx plugin-cache purge-expired   Remove expired entries
- *   npx plugin-cache clear-all       Clear entire cache
- *   npx plugin-cache clear <ns>      Clear specific namespace
- */
 
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import { CacheManifest, GlobalCacheStats, CacheStats } from "./types";
 import { purgeExpired, clearAll, clearNamespace } from "./cleanup";
+import { validateCacheNamespace } from "./namespace";
 
-const DEFAULT_CACHE_DIR = path.join(os.homedir(), ".cache", "plugin-cache");
-const DEFAULT_SWR = 24 * 60 * 60 * 1000; // 24 hours
+const DEFAULT_CACHE_DIR = path.resolve(
+  process.env.PLUGIN_CACHE_DIR?.trim() || path.join(os.homedir(), ".cache", "plugin-cache"),
+);
+const DEFAULT_SWR = 24 * 60 * 60 * 1000;
 
-/**
- * Get global cache statistics
- */
 export function getGlobalStats(cacheDir?: string): GlobalCacheStats {
   const dir = cacheDir || DEFAULT_CACHE_DIR;
   const manifestPath = path.join(dir, "manifest.json");
@@ -39,7 +30,6 @@ export function getGlobalStats(cacheDir?: string): GlobalCacheStats {
   const now = new Date();
   const byNamespace: Record<string, CacheStats> = {};
 
-  // Group by namespace
   for (const entry of Object.values(manifest.entries)) {
     if (!byNamespace[entry.namespace]) {
       byNamespace[entry.namespace] = {
@@ -82,9 +72,6 @@ export function getGlobalStats(cacheDir?: string): GlobalCacheStats {
   };
 }
 
-/**
- * Format bytes to human readable
- */
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
   const k = 1024;
@@ -93,9 +80,6 @@ function formatBytes(bytes: number): string {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
 }
 
-/**
- * Main CLI handler
- */
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const command = args[0];
@@ -153,6 +137,12 @@ async function main(): Promise<void> {
         console.log("Usage: npx plugin-cache clear <namespace>");
         process.exit(1);
       }
+      try {
+        validateCacheNamespace(namespace);
+      } catch (error) {
+        console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+        process.exit(1);
+      }
       console.log(`Clearing cache for ${namespace}...`);
       const result = clearNamespace(DEFAULT_CACHE_DIR, namespace);
       console.log(`Removed ${result.entriesRemoved} entries`);
@@ -180,7 +170,6 @@ Cache location: ${DEFAULT_CACHE_DIR}
   }
 }
 
-// Run CLI if executed directly
 if (require.main === module) {
   main().catch(console.error);
 }

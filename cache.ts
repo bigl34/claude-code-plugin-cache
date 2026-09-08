@@ -1,11 +1,8 @@
-/**
- * PluginCache - Core cache implementation
- * File-based persistent cache for Claude Code plugins
- */
 
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import { createHash } from "crypto";
 import {
   CacheConfig,
   CacheEntry,
@@ -19,13 +16,19 @@ import {
   SetOptions,
 } from "./types";
 import { cleanupIfNeeded } from "./cleanup";
+import { resolveCachePath, validateCacheNamespace } from "./namespace";
 
 const DEFAULT_CACHE_DIR = path.join(os.homedir(), ".cache", "plugin-cache");
-const DEFAULT_MAX_SIZE = 500 * 1024 * 1024; // 500MB
-const DEFAULT_MAX_ENTRY_SIZE = 10 * 1024 * 1024; // 10MB
-const DEFAULT_TTL = 300_000; // 5 minutes
-const DEFAULT_STALE_WHILE_REVALIDATE = 86_400_000; // 24 hours
-const MANIFEST_VERSION = 1;
+const DEFAULT_MAX_SIZE = 500 * 1024 * 1024;
+
+function resolveCacheRoot(configured?: string): string {
+  const fromEnv = process.env.PLUGIN_CACHE_DIR?.trim();
+  return path.resolve(configured || fromEnv || DEFAULT_CACHE_DIR);
+}
+const DEFAULT_MAX_ENTRY_SIZE = 10 * 1024 * 1024;
+const DEFAULT_TTL = 300_000;
+const DEFAULT_STALE_WHILE_REVALIDATE = 86_400_000;
+const MANIFEST_VERSION = 2;
 
 export class PluginCache {
   private namespace: string;
@@ -38,18 +41,18 @@ export class PluginCache {
   private disabled: boolean;
 
   constructor(config: CacheConfig) {
-    this.namespace = config.namespace;
-    this.cacheDir = config.cacheDir || DEFAULT_CACHE_DIR;
-    this.namespaceDir = path.join(this.cacheDir, this.namespace);
+    this.namespace = validateCacheNamespace(config.namespace);
+    this.cacheDir = resolveCacheRoot(config.cacheDir);
+    this.namespaceDir = resolveCachePath(this.cacheDir, this.namespace);
     this.manifestPath = path.join(this.cacheDir, "manifest.json");
     this.defaultTTL = config.defaultTTL ?? DEFAULT_TTL;
     this.defaultSWR = config.defaultStaleWhileRevalidate ?? DEFAULT_STALE_WHILE_REVALIDATE;
     this.maxEntrySize = config.maxEntrySize ?? DEFAULT_MAX_ENTRY_SIZE;
     this.disabled = config.disabled ?? false;
 
-    // Ensure directories exist
     if (!this.disabled) {
       this.ensureDirectories();
+      this.migrateManifestIfNeeded();
     }
   }
 
@@ -62,79 +65,99 @@ export class PluginCache {
     }
   }
 
+  private emptyManifest(maxSize = DEFAULT_MAX_SIZE): CacheManifest {
+    return {
+      version: MANIFEST_VERSION,
+      totalSize: 0,
+      maxSize,
+      entries: {},
+    };
+  }
+
+  private isInsideCacheDir(filePath: string): boolean {
+    const resolved = path.resolve(filePath);
+    const relative = path.relative(this.cacheDir, resolved);
+    return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+  }
+
+  private migrateManifestIfNeeded(): void {
+    if (!fs.existsSync(this.manifestPath)) return;
+
+    let manifest: CacheManifest;
+    try {
+      manifest = JSON.parse(fs.readFileSync(this.manifestPath, "utf-8")) as CacheManifest;
+    } catch {
+      this.saveManifest(this.emptyManifest());
+      return;
+    }
+
+    if (manifest.version === MANIFEST_VERSION) return;
+
+    for (const entry of Object.values(manifest.entries ?? {})) {
+      if (entry.filePath && this.isInsideCacheDir(entry.filePath) && fs.existsSync(entry.filePath)) {
+        try {
+          fs.unlinkSync(entry.filePath);
+        } catch {
+        }
+      }
+    }
+
+    this.saveManifest(this.emptyManifest(manifest.maxSize || DEFAULT_MAX_SIZE));
+  }
+
   private getManifest(): CacheManifest {
     if (!fs.existsSync(this.manifestPath)) {
-      return {
-        version: MANIFEST_VERSION,
-        totalSize: 0,
-        maxSize: DEFAULT_MAX_SIZE,
-        entries: {},
-      };
+      return this.emptyManifest();
     }
     try {
       const content = fs.readFileSync(this.manifestPath, "utf-8");
-      return JSON.parse(content);
+      const manifest = JSON.parse(content) as CacheManifest;
+      if (manifest.version !== MANIFEST_VERSION) {
+        return this.emptyManifest(manifest.maxSize || DEFAULT_MAX_SIZE);
+      }
+      return manifest;
     } catch {
-      return {
-        version: MANIFEST_VERSION,
-        totalSize: 0,
-        maxSize: DEFAULT_MAX_SIZE,
-        entries: {},
-      };
+      return this.emptyManifest();
     }
   }
 
   private saveManifest(manifest: CacheManifest): void {
-    // Atomic write: write to temp file, then rename
-    // This prevents manifest corruption if process crashes mid-write
     const tempPath = `${this.manifestPath}.tmp.${process.pid}`;
     try {
       fs.writeFileSync(tempPath, JSON.stringify(manifest, null, 2));
       fs.renameSync(tempPath, this.manifestPath);
     } catch (error) {
-      // Clean up temp file on error
       try {
         if (fs.existsSync(tempPath)) {
           fs.unlinkSync(tempPath);
         }
       } catch {
-        // Ignore cleanup errors
       }
       throw error;
     }
   }
 
   private getFilePath(key: string): string {
-    // Sanitize key for filesystem
-    const safeKey = key.replace(/[^a-zA-Z0-9_-]/g, "_");
-    return path.join(this.namespaceDir, `${safeKey}.json`);
+    const digest = createHash("sha256")
+      .update(`${this.namespace}\0${key}`)
+      .digest("base64url");
+    return resolveCachePath(this.namespaceDir, `${digest}.json`);
   }
 
-  /**
-   * Disable cache (all operations become no-ops)
-   */
   disable(): void {
     this.disabled = true;
   }
 
-  /**
-   * Enable cache
-   */
   enable(): void {
     this.disabled = false;
     this.ensureDirectories();
+    this.migrateManifestIfNeeded();
   }
 
-  /**
-   * Check if cache is disabled
-   */
   isDisabled(): boolean {
     return this.disabled;
   }
 
-  /**
-   * Get an entry from the cache
-   */
   get<T>(key: string, options?: GetOptions): CacheResult<T> {
     if (this.disabled) {
       return { data: null, hit: false, stale: false, needsRevalidation: true };
@@ -153,11 +176,9 @@ export class PluginCache {
       const ttl = options?.ttl ?? this.defaultTTL;
       const swr = options?.staleWhileRevalidate ?? this.defaultSWR;
 
-      // Update last accessed time
       entry.lastAccessedAt = now.toISOString();
       fs.writeFileSync(filePath, JSON.stringify(entry));
 
-      // Update manifest
       const manifest = this.getManifest();
       const manifestKey = filePath;
       if (manifest.entries[manifestKey]) {
@@ -165,13 +186,11 @@ export class PluginCache {
         this.saveManifest(manifest);
       }
 
-      // Check expiration
       const isExpired = now > expiresAt;
       const swrExpiresAt = new Date(expiresAt.getTime() + swr);
       const isWithinSWR = now <= swrExpiresAt;
 
       if (isExpired && !isWithinSWR) {
-        // Completely expired, remove entry
         this.invalidate(key);
         return { data: null, hit: false, stale: false, needsRevalidation: true };
       }
@@ -188,9 +207,6 @@ export class PluginCache {
     }
   }
 
-  /**
-   * Set an entry in the cache
-   */
   async set<T>(key: string, data: T, options?: SetOptions): Promise<void> {
     if (this.disabled) return;
 
@@ -221,7 +237,6 @@ export class PluginCache {
 
     const filePath = this.getFilePath(key);
 
-    // Update manifest first
     const manifest = this.getManifest();
     const oldEntry = manifest.entries[filePath];
     const oldSize = oldEntry?.size ?? 0;
@@ -237,16 +252,11 @@ export class PluginCache {
     manifest.totalSize = manifest.totalSize - oldSize + size;
     this.saveManifest(manifest);
 
-    // Write cache file
     fs.writeFileSync(filePath, JSON.stringify(entry, null, 2));
 
-    // Run cleanup if needed
     await cleanupIfNeeded(this.cacheDir);
   }
 
-  /**
-   * Get from cache or fetch fresh data
-   */
   async getOrFetch<T>(
     key: string,
     fetcher: () => Promise<T>,
@@ -270,22 +280,16 @@ export class PluginCache {
     }
 
     if (cached.hit && cached.stale) {
-      // Return stale data but trigger background refresh
-      // In synchronous context, we just fetch and update
       const freshData = await fetcher();
       await this.set(key, freshData, options);
       return freshData;
     }
 
-    // Cache miss - fetch fresh
     const data = await fetcher();
     await this.set(key, data, options);
     return data;
   }
 
-  /**
-   * Invalidate (delete) a specific cache entry
-   */
   invalidate(key: string): boolean {
     if (this.disabled) return false;
 
@@ -293,14 +297,11 @@ export class PluginCache {
     if (!fs.existsSync(filePath)) return false;
 
     try {
-      // Get size before deleting
       const content = fs.readFileSync(filePath, "utf-8");
       const entry = JSON.parse(content) as CacheEntry;
 
-      // Delete file
       fs.unlinkSync(filePath);
 
-      // Update manifest
       const manifest = this.getManifest();
       if (manifest.entries[filePath]) {
         manifest.totalSize -= entry.size;
@@ -314,9 +315,6 @@ export class PluginCache {
     }
   }
 
-  /**
-   * Invalidate multiple entries matching a pattern
-   */
   invalidatePattern(pattern: string | RegExp): number {
     if (this.disabled) return 0;
 
@@ -335,9 +333,6 @@ export class PluginCache {
     return count;
   }
 
-  /**
-   * Clear all entries in this namespace
-   */
   clear(): number {
     if (this.disabled) return 0;
 
@@ -355,7 +350,6 @@ export class PluginCache {
           delete manifest.entries[filePath];
           count++;
         } catch {
-          // Ignore errors
         }
       }
     }
@@ -363,12 +357,24 @@ export class PluginCache {
     manifest.totalSize -= freedSize;
     this.saveManifest(manifest);
 
-    return count;
+    return count + this.removeOrphanedFiles();
   }
 
-  /**
-   * Get validator info for conditional requests
-   */
+  private removeOrphanedFiles(): number {
+    if (!fs.existsSync(this.namespaceDir)) return 0;
+
+    let removed = 0;
+    for (const name of fs.readdirSync(this.namespaceDir)) {
+      if (!name.endsWith(".json")) continue;
+      try {
+        fs.unlinkSync(resolveCachePath(this.namespaceDir, name));
+        removed++;
+      } catch {
+      }
+    }
+    return removed;
+  }
+
   getValidator(key: string): CacheValidator | null {
     if (this.disabled) return null;
 
@@ -388,9 +394,6 @@ export class PluginCache {
     }
   }
 
-  /**
-   * Get cache statistics for this namespace
-   */
   getStats(): CacheStats {
     if (this.disabled) {
       return {
@@ -445,9 +448,6 @@ export class PluginCache {
     };
   }
 
-  /**
-   * List all keys in this namespace
-   */
   keys(): string[] {
     if (this.disabled) return [];
 
@@ -457,11 +457,9 @@ export class PluginCache {
       .map((e) => e.key);
   }
 
-  /**
-   * Check if a key exists in cache (regardless of expiration)
-   */
   has(key: string): boolean {
     if (this.disabled) return false;
     return fs.existsSync(this.getFilePath(key));
   }
 }
+

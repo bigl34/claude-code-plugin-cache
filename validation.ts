@@ -1,14 +1,6 @@
-/**
- * Cache Validation - ETag and conditional request helpers
- * Support for HTTP conditional requests (If-None-Match, If-Modified-Since)
- */
 
 import { CacheValidator } from "./types";
 
-/**
- * Build headers for conditional HTTP requests
- * Use these headers when making API calls to enable 304 Not Modified responses
- */
 export function buildConditionalHeaders(
   validator: CacheValidator | null
 ): Record<string, string> {
@@ -29,16 +21,11 @@ export function buildConditionalHeaders(
   return headers;
 }
 
-/**
- * Extract validator from HTTP response headers
- * Call this after receiving a successful response to store validators
- */
 export function extractValidator(
   headers: Headers | Record<string, string> | Map<string, string>
 ): CacheValidator {
   const validator: CacheValidator = {};
 
-  // Handle different header container types
   let etag: string | null = null;
   let lastModified: string | null = null;
 
@@ -49,7 +36,6 @@ export function extractValidator(
     etag = headers.get("etag") || headers.get("ETag") || null;
     lastModified = headers.get("last-modified") || headers.get("Last-Modified") || null;
   } else {
-    // Plain object
     etag = headers["etag"] || headers["ETag"] || null;
     lastModified = headers["last-modified"] || headers["Last-Modified"] || null;
   }
@@ -65,17 +51,10 @@ export function extractValidator(
   return validator;
 }
 
-/**
- * Check if response is a 304 Not Modified
- */
 export function isNotModified(status: number): boolean {
   return status === 304;
 }
 
-/**
- * Helper to perform a conditional fetch with cache integration
- * Returns the cached data if 304, otherwise the new data
- */
 export async function conditionalFetch<T>(options: {
   url: string;
   validator: CacheValidator | null;
@@ -108,10 +87,6 @@ export async function conditionalFetch<T>(options: {
   };
 }
 
-/**
- * Create a cache key from URL and optional parameters
- * Normalizes URLs and parameters for consistent cache keys
- */
 export function createCacheKey(
   baseKey: string,
   params?: Record<string, string | number | boolean | undefined>
@@ -120,7 +95,6 @@ export function createCacheKey(
     return baseKey;
   }
 
-  // Sort params for consistent keys
   const sortedParams = Object.entries(params)
     .filter(([_, v]) => v !== undefined)
     .sort(([a], [b]) => a.localeCompare(b))
@@ -130,9 +104,6 @@ export function createCacheKey(
   return sortedParams ? `${baseKey}?${sortedParams}` : baseKey;
 }
 
-/**
- * Parse a cache key back into base and params
- */
 export function parseCacheKey(key: string): {
   base: string;
   params: Record<string, string>;

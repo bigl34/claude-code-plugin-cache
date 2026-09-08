@@ -1,19 +1,23 @@
-/**
- * Cache Cleanup - LRU eviction logic
- * Automatically cleans up when cache exceeds size limits
- */
 
 import * as fs from "fs";
 import * as path from "path";
 import { CacheManifest, CleanupResult, ManifestEntry } from "./types";
+import { isPathInsideRoot, resolveCachePath, validateCacheNamespace } from "./namespace";
 
-const DEFAULT_MAX_SIZE = 500 * 1024 * 1024; // 500MB
-const CLEANUP_THRESHOLD = 0.9; // 90% triggers cleanup
-const CLEANUP_TARGET = 0.7; // Clean down to 70%
+const DEFAULT_MAX_SIZE = 500 * 1024 * 1024;
+const CLEANUP_THRESHOLD = 0.9;
+const CLEANUP_TARGET = 0.7;
 
-/**
- * Check if cleanup is needed and perform if necessary
- */
+function safeUnlink(cacheDir: string, filePath: string): boolean {
+  if (!isPathInsideRoot(cacheDir, filePath)) {
+    return false;
+  }
+  if (fs.existsSync(filePath)) {
+    fs.unlinkSync(filePath);
+  }
+  return true;
+}
+
 export async function cleanupIfNeeded(cacheDir: string): Promise<CleanupResult | null> {
   const manifestPath = path.join(cacheDir, "manifest.json");
 
@@ -32,9 +36,6 @@ export async function cleanupIfNeeded(cacheDir: string): Promise<CleanupResult |
   return performCleanup(cacheDir, manifest);
 }
 
-/**
- * Perform LRU cleanup
- */
 export function performCleanup(
   cacheDir: string,
   manifest?: CacheManifest
@@ -51,7 +52,6 @@ export function performCleanup(
   const maxSize = manifest.maxSize || DEFAULT_MAX_SIZE;
   const targetSize = maxSize * CLEANUP_TARGET;
 
-  // Sort entries by last accessed time (oldest first)
   const entries = Object.values(manifest.entries).sort((a, b) => {
     const aTime = new Date(a.lastAccessedAt).getTime();
     const bTime = new Date(b.lastAccessedAt).getTime();
@@ -68,19 +68,16 @@ export function performCleanup(
     }
 
     try {
-      if (fs.existsSync(entry.filePath)) {
-        fs.unlinkSync(entry.filePath);
+      if (safeUnlink(cacheDir, entry.filePath)) {
+        delete manifest.entries[entry.filePath];
+        currentSize -= entry.size;
+        bytesFreed += entry.size;
+        entriesRemoved++;
       }
-      delete manifest.entries[entry.filePath];
-      currentSize -= entry.size;
-      bytesFreed += entry.size;
-      entriesRemoved++;
     } catch {
-      // Ignore individual file deletion errors
     }
   }
 
-  // Update manifest
   manifest.totalSize = currentSize;
   manifest.lastCleanup = new Date().toISOString();
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
@@ -92,9 +89,6 @@ export function performCleanup(
   };
 }
 
-/**
- * Remove all expired entries (past SWR window)
- */
 export function purgeExpired(
   cacheDir: string,
   defaultSWR: number = 24 * 60 * 60 * 1000
@@ -116,14 +110,12 @@ export function purgeExpired(
 
     if (now > swrExpiresAt) {
       try {
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
+        if (safeUnlink(cacheDir, filePath)) {
+          bytesFreed += entry.size;
+          delete manifest.entries[filePath];
+          entriesRemoved++;
         }
-        bytesFreed += entry.size;
-        delete manifest.entries[filePath];
-        entriesRemoved++;
       } catch {
-        // Ignore individual errors
       }
     }
   }
@@ -139,9 +131,6 @@ export function purgeExpired(
   };
 }
 
-/**
- * Clear entire cache
- */
 export function clearAll(cacheDir: string): CleanupResult {
   const manifestPath = path.join(cacheDir, "manifest.json");
 
@@ -155,17 +144,14 @@ export function clearAll(cacheDir: string): CleanupResult {
 
   for (const [filePath, entry] of Object.entries(manifest.entries)) {
     try {
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
+      if (safeUnlink(cacheDir, filePath)) {
+        bytesFreed += entry.size;
+        entriesRemoved++;
       }
-      bytesFreed += entry.size;
-      entriesRemoved++;
     } catch {
-      // Ignore individual errors
     }
   }
 
-  // Reset manifest
   const newManifest: CacheManifest = {
     version: manifest.version,
     totalSize: 0,
@@ -175,7 +161,6 @@ export function clearAll(cacheDir: string): CleanupResult {
   };
   fs.writeFileSync(manifestPath, JSON.stringify(newManifest, null, 2));
 
-  // Try to remove namespace directories
   try {
     const dirs = fs.readdirSync(cacheDir);
     for (const dir of dirs) {
@@ -185,7 +170,6 @@ export function clearAll(cacheDir: string): CleanupResult {
       }
     }
   } catch {
-    // Ignore directory cleanup errors
   }
 
   return {
@@ -195,10 +179,8 @@ export function clearAll(cacheDir: string): CleanupResult {
   };
 }
 
-/**
- * Clear cache for a specific namespace
- */
 export function clearNamespace(cacheDir: string, namespace: string): CleanupResult {
+  const safeNamespace = validateCacheNamespace(namespace);
   const manifestPath = path.join(cacheDir, "manifest.json");
 
   if (!fs.existsSync(manifestPath)) {
@@ -210,16 +192,13 @@ export function clearNamespace(cacheDir: string, namespace: string): CleanupResu
   let bytesFreed = 0;
 
   for (const [filePath, entry] of Object.entries(manifest.entries)) {
-    if (entry.namespace === namespace) {
+    if (entry.namespace === safeNamespace) {
       try {
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-        }
+        safeUnlink(cacheDir, filePath);
         bytesFreed += entry.size;
         delete manifest.entries[filePath];
         entriesRemoved++;
       } catch {
-        // Ignore individual errors
       }
     }
   }
@@ -227,14 +206,12 @@ export function clearNamespace(cacheDir: string, namespace: string): CleanupResu
   manifest.totalSize -= bytesFreed;
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
 
-  // Try to remove namespace directory
-  const namespaceDir = path.join(cacheDir, namespace);
+  const namespaceDir = resolveCachePath(cacheDir, safeNamespace);
   try {
     if (fs.existsSync(namespaceDir)) {
       fs.rmSync(namespaceDir, { recursive: true, force: true });
     }
   } catch {
-    // Ignore directory cleanup errors
   }
 
   return {

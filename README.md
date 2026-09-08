@@ -18,12 +18,14 @@ In your plugin's `package.json`:
 ```json
 {
   "dependencies": {
-    "@local/plugin-cache": "github:bigl34/claude-code-plugin-cache"
+    "@local/plugin-cache": "github:<owner>/claude-code-plugin-cache"
   }
 }
 ```
 
-Then run `npm install`.
+Inside the workspace this resolves to the local package via npm workspaces;
+`/publish-public-repos` Pass C maps the workspace spec to the published
+repository above at publish time. Then run `npm ci` from the workspace root.
 
 ## Usage
 
@@ -149,7 +151,7 @@ npx tsx cli.ts list-products --no-cache
 Manage cache across all plugins:
 
 ```bash
-cd ~/.claude/plugins/local-marketplace/shared/cache
+cd ~/biz/scripts/shared/cache
 npx tsx cli.ts stats          # Global stats
 npx tsx cli.ts cleanup        # Manual LRU cleanup
 npx tsx cli.ts clear          # Clear everything
@@ -206,3 +208,12 @@ async createProduct(data: ProductData): Promise<Product> {
 - `airtable-manager` v1.1.0+
 - `klaviyo-marketing-manager` v1.1.0+
 - `xero-accounting-manager` v2.1.0+
+
+## Manifest recovery
+
+`manifest.json` tracks size and eviction metadata but is not authoritative for
+cache existence: concurrent writers can leave a valid entry file absent from
+the manifest. Reads consult entry files directly. Namespace clearing therefore
+removes both manifest-listed entries and matching files discovered on disk, so
+an orphaned entry cannot survive a cache-clear and serve stale data.
+

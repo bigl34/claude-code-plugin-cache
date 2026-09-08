@@ -10,7 +10,8 @@
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
-    "prepublish": "npm run build"
+    "prepublish": "npm run build",
+    "test": "npx --yes tsx --test tests/*.test.ts"
   },
   "keywords": [
     "cache",
@@ -19,8 +20,8 @@
   ],
   "license": "MIT",
   "devDependencies": {
-    "@types/node": "^20.0.0",
-    "typescript": "^5.0.0"
+    "@types/node": "22.19.19",
+    "typescript": "5.9.3"
   },
   "engines": {
     "node": ">=18.0.0"
