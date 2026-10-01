@@ -19,7 +19,6 @@ export type {
   CacheManifest,
   CacheResult,
   CacheStats,
-  CacheValidator,
   CleanupResult,
   GetOptions,
   GetOrFetchOptions,
@@ -38,13 +37,6 @@ export {
 
 export { validateCacheNamespace } from "./namespace";
 
-export {
-  buildConditionalHeaders,
-  conditionalFetch,
-  createCacheKey,
-  extractValidator,
-  isNotModified,
-  parseCacheKey,
-} from "./validation";
+export { createCacheKey } from "./validation";
 
 export { getGlobalStats } from "./cli";

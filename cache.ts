@@ -9,7 +9,6 @@ import {
   CacheManifest,
   CacheResult,
   CacheStats,
-  CacheValidator,
   GetOptions,
   GetOrFetchOptions,
   ManifestEntry,
@@ -230,9 +229,6 @@ export class PluginCache {
       lastAccessedAt: now.toISOString(),
       expiresAt: expiresAt.toISOString(),
       size,
-      ...(options?.etag && { etag: options.etag }),
-      ...(options?.lastModified && { lastModified: options.lastModified }),
-      ...(options?.version && { version: options.version }),
     };
 
     const filePath = this.getFilePath(key);
@@ -373,25 +369,6 @@ export class PluginCache {
       }
     }
     return removed;
-  }
-
-  getValidator(key: string): CacheValidator | null {
-    if (this.disabled) return null;
-
-    const filePath = this.getFilePath(key);
-    if (!fs.existsSync(filePath)) return null;
-
-    try {
-      const content = fs.readFileSync(filePath, "utf-8");
-      const entry = JSON.parse(content) as CacheEntry;
-      if (!entry.etag && !entry.lastModified) return null;
-      return {
-        ...(entry.etag && { etag: entry.etag }),
-        ...(entry.lastModified && { lastModified: entry.lastModified }),
-      };
-    } catch {
-      return null;
-    }
   }
 
   getStats(): CacheStats {

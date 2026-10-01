@@ -4,9 +4,6 @@ export interface CacheEntry<T = unknown> {
   createdAt: string;
   lastAccessedAt: string;
   expiresAt: string;
-  etag?: string;
-  lastModified?: string;
-  version?: string;
   size: number;
 }
 
@@ -43,9 +40,6 @@ export interface GetOptions {
 
 export interface SetOptions {
   ttl?: number;
-  etag?: string;
-  lastModified?: string;
-  version?: string;
 }
 
 export interface GetOrFetchOptions extends SetOptions {
@@ -59,11 +53,6 @@ export interface CacheResult<T> {
   stale: boolean;
   needsRevalidation: boolean;
   entry?: CacheEntry<T>;
-}
-
-export interface CacheValidator {
-  etag?: string;
-  lastModified?: string;
 }
 
 export interface CacheStats {

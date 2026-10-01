@@ -11,6 +11,9 @@ A shared persistent file-based cache library for Claude Code plugins.
 - **Cache invalidation** via exact key or regex pattern
 - **Global CLI** for cache management
 
+Existing entries with legacy HTTP-validator or entry-version metadata remain readable.
+New writes retain data, timestamps, and size; manifest versioning is unchanged.
+
 ## Installation
 
 In your plugin's `package.json`:
